@@ -85,11 +85,13 @@ const LiveInterview = () => {
   const totalSecondsElapsedRef = useRef(0);
   const isTransitioningRef = useRef(false);
   const isUploadingRecordingRef = useRef(false);
+  const isThinkingRef = useRef(false);
   const socketRef = useRef(null);
 
   useEffect(() => { answerTextRef.current = answerText; }, [answerText]);
   useEffect(() => { codeSnippetRef.current = codeSnippet; }, [codeSnippet]);
   useEffect(() => { questionIndexRef.current = questionIndex; }, [questionIndex]);
+  useEffect(() => { isThinkingRef.current = isThinking; }, [isThinking]);
   useEffect(() => { socketRef.current = socket; }, [socket]);
 
   // AI Voice Narration (Text-to-Speech)
@@ -138,8 +140,8 @@ const LiveInterview = () => {
         return;
       }
 
-      // 2. 1-Minute Question Countdown
-      if (!isTransitioningRef.current) {
+      // 2. 1-Minute Question Countdown (paused while AI is formulating the question)
+      if (!isTransitioningRef.current && !isThinkingRef.current) {
         questionSecondsLeftRef.current -= 1;
         setQuestionSecondsLeft(questionSecondsLeftRef.current);
 
@@ -377,6 +379,12 @@ const LiveInterview = () => {
       navigate(`/interview/report/${sessionId}`);
     });
 
+    socketInstance.on('error-message', (err) => {
+      console.warn('[Socket Error Message]:', err);
+      setIsThinking(false);
+      setIsEvaluating(false);
+    });
+
     setSocket(socketInstance);
 
     return () => {
@@ -385,6 +393,21 @@ const LiveInterview = () => {
       socketInstance.disconnect();
     };
   }, [sessionId, token, navigate]);
+
+  // Watchdog: If question formulation ever hangs for > 5 seconds, automatically re-request question
+  useEffect(() => {
+    if (!isThinking) return;
+    const watchdog = setTimeout(() => {
+      console.warn('[Watchdog] AI is taking longer than 5s to formulate question. Requesting retry...');
+      if (socketRef.current) {
+        socketRef.current.emit('get-question', {
+          sessionId,
+          questionIndex: questionIndexRef.current
+        });
+      }
+    }, 5000);
+    return () => clearTimeout(watchdog);
+  }, [isThinking, sessionId]);
 
   // 5. Core Transition: Automatically or Manually Advance to Next Question
   const advanceToNextQuestion = (isAutoTimeout = false) => {
@@ -444,6 +467,8 @@ const LiveInterview = () => {
     const nextIdx = currentIdx + 1;
     questionIndexRef.current = nextIdx;
     setQuestionIndex(nextIdx);
+    setIsThinking(true);
+    isThinkingRef.current = true;
 
     if (socketRef.current) {
       socketRef.current.emit('get-question', { sessionId, questionIndex: nextIdx });
@@ -799,11 +824,25 @@ const LiveInterview = () => {
             </div>
 
             {isThinking ? (
-              <div className="py-6 flex flex-col items-center justify-center space-y-2">
+              <div className="py-6 flex flex-col items-center justify-center space-y-2.5">
                 <div className="w-8 h-8 border-3 border-brand-500 border-t-transparent rounded-full animate-spin" />
                 <span className="text-xs text-slate-400 animate-pulse">
                   AI Interviewer is formulating question {questionIndex + 1} of 5...
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (socketRef.current) {
+                      socketRef.current.emit('get-question', {
+                        sessionId,
+                        questionIndex: questionIndexRef.current
+                      });
+                    }
+                  }}
+                  className="text-[11px] text-brand-400 hover:text-brand-300 underline underline-offset-2 transition-colors cursor-pointer"
+                >
+                  Taking longer than expected? Click to load question immediately
+                </button>
               </div>
             ) : (
               <div>

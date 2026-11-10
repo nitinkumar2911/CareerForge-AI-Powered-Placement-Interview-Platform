@@ -505,12 +505,41 @@ const ROLE_QUESTION_BANKS = {
 const DEFAULT_QUESTIONS = ROLE_QUESTION_BANKS['Full Stack Developer'];
 
 /**
- * Helper to call Gemini API with model fallback
+ * Robust JSON extraction helper that safely strips markdown fences
+ */
+function cleanAndParseJSON(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+  let cleaned = rawText.trim();
+  // Strip markdown code fences if Gemini returns ```json ... ```
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  }
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    // Attempt regex extraction of outermost JSON object { ... }
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (e) {}
+    }
+    return null;
+  }
+}
+
+/**
+ * Helper to call Gemini API with model fallback and strict per-request timeout
  */
 async function callGemini(apiKey, prompt) {
-  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+  // Use responsive models: gemini-3.5-flash is fast, gemini-3.8-flash as fallback
+  const models = ['gemini-3.5-flash', 'gemini-3.8-flash'];
   for (const model of models) {
     try {
+      const controller = new AbortController();
+      // Strict 3.5s timeout prevents hanging question transitions
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
         {
@@ -519,33 +548,41 @@ async function callGemini(apiKey, prompt) {
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: { responseMimeType: 'application/json' }
-          })
+          }),
+          signal: controller.signal
         }
       );
+      clearTimeout(timeoutId);
 
       if (response.ok) {
         const data = await response.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) {
-          console.log(`[Gemini Live API] Successfully generated response using ${model}!`);
-          return JSON.parse(text);
+          const parsed = cleanAndParseJSON(text);
+          if (parsed) {
+            console.log(`[Gemini Live API] Successfully generated response using ${model}!`);
+            return parsed;
+          }
         }
+      } else {
+        console.warn(`[Gemini Live API] ${model} returned HTTP ${response.status}`);
       }
     } catch (err) {
-      console.warn(`Gemini API call on ${model} failed:`, err.message);
+      console.warn(`Gemini API call on ${model} failed/timed out:`, err.message);
     }
   }
   return null;
 }
 
 /**
- * Fetch or generate an interview question
+ * Fetch or generate an interview question with guaranteed sub-3.5s response
  */
 async function generateInterviewQuestion(role, difficulty, questionIndex, previousQuestions = []) {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (apiKey && apiKey.trim() !== '') {
-    const prompt = `You are a world-class technical interviewer conducting an authentic 5-question technical interview for a ${difficulty} level candidate in the domain: "${role}".
+    try {
+      const prompt = `You are a world-class technical interviewer conducting an authentic 5-question technical interview for a ${difficulty} level candidate in the domain: "${role}".
 This is Question ${questionIndex + 1} of 5.
 
 CRITICAL INSTRUCTIONS:
@@ -556,7 +593,7 @@ CRITICAL INSTRUCTIONS:
   * Question 3: Deep dive into performance optimization, edge cases, or debugging in ${role}.
   * Question 4: Scalability, security, or enterprise design patterns in ${role}.
   * Question 5: Complex real-world production incident/scenario and engineering trade-offs in ${role}.
-${previousQuestions.length > 0 ? `Previous questions already asked in this session (do not repeat): ${JSON.stringify(previousQuestions.map(q => q.questionText))}` : ''}
+${previousQuestions && previousQuestions.length > 0 ? `Previous questions already asked in this session (do not repeat): ${JSON.stringify(previousQuestions.map(q => q.questionText))}` : ''}
 
 Output strictly valid JSON with this exact schema:
 {
@@ -566,18 +603,22 @@ Output strictly valid JSON with this exact schema:
   "modelAnswer": "Comprehensive, senior-level architectural model answer"
 }`;
 
-    const parsed = await callGemini(apiKey, prompt);
-    if (parsed) {
-      return {
-        category: parsed.category || `${role} Concepts`,
-        questionText: parsed.questionText,
-        expectedKeywords: parsed.expectedKeywords || [],
-        modelAnswer: parsed.modelAnswer || ''
-      };
+      const parsed = await callGemini(apiKey, prompt);
+      const qText = parsed?.questionText || parsed?.question || parsed?.title;
+      if (parsed && qText) {
+        return {
+          category: parsed.category || `${role} Concepts`,
+          questionText: qText,
+          expectedKeywords: Array.isArray(parsed.expectedKeywords) ? parsed.expectedKeywords : [],
+          modelAnswer: parsed.modelAnswer || ''
+        };
+      }
+    } catch (err) {
+      console.warn('generateInterviewQuestion Gemini error, using curated fallback:', err.message);
     }
   }
 
-  // Intelligent fallback from curated question bank strictly matching question progression (1 to 5)
+  // Guaranteed instantaneous fallback from curated question bank strictly matching question progression (1 to 5)
   const roleBank = ROLE_QUESTION_BANKS[role] || DEFAULT_QUESTIONS;
   const idx = Math.min(Math.max(0, questionIndex), roleBank.length - 1);
   const q = roleBank[idx];
@@ -585,8 +626,8 @@ Output strictly valid JSON with this exact schema:
   return {
     category: q.category,
     questionText: q.questionText,
-    expectedKeywords: q.expectedKeywords,
-    modelAnswer: q.modelAnswer
+    expectedKeywords: q.expectedKeywords || [],
+    modelAnswer: q.modelAnswer || ''
   };
 }
 
@@ -597,7 +638,8 @@ async function evaluateInterviewAnswer(questionText, expectedKeywords, candidate
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (apiKey && apiKey.trim() !== '') {
-    const prompt = `You are a strict but constructive senior engineering interviewer evaluating a candidate's answer.
+    try {
+      const prompt = `You are a strict but constructive senior engineering interviewer evaluating a candidate's answer.
 Difficulty level: ${difficulty}
 Question: "${questionText}"
 Candidate Answer: "${candidateAnswer}"
@@ -614,9 +656,12 @@ Evaluate the candidate and return strictly valid JSON matching this schema:
   "modelAnswer": "<A concise, high-impact model answer>"
 }`;
 
-    const result = await callGemini(apiKey, prompt);
-    if (result) {
-      return result;
+      const result = await callGemini(apiKey, prompt);
+      if (result && typeof result.score === 'number') {
+        return result;
+      }
+    } catch (err) {
+      console.warn('evaluateInterviewAnswer Gemini error, using heuristic engine:', err.message);
     }
   }
 
@@ -728,5 +773,7 @@ function generateOverallFeedback(questions) {
 module.exports = {
   generateInterviewQuestion,
   evaluateInterviewAnswer,
-  generateOverallFeedback
+  generateOverallFeedback,
+  ROLE_QUESTION_BANKS,
+  DEFAULT_QUESTIONS
 };

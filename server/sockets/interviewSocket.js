@@ -3,7 +3,9 @@ const InterviewSession = require('../models/InterviewSession');
 const {
   generateInterviewQuestion,
   evaluateInterviewAnswer,
-  generateOverallFeedback
+  generateOverallFeedback,
+  ROLE_QUESTION_BANKS,
+  DEFAULT_QUESTIONS
 } = require('../services/aiInterviewService');
 
 const registerInterviewSocket = (io) => {
@@ -57,27 +59,34 @@ const registerInterviewSocket = (io) => {
 
     // Request the next question (strictly capped at 5 questions: indices 0 to 4)
     socket.on('get-question', async ({ sessionId, questionIndex = 0 }) => {
+      let session = null;
       try {
-        const session = await InterviewSession.findById(sessionId);
+        session = await InterviewSession.findById(sessionId);
         if (!session) return socket.emit('error-message', { message: 'Session not found' });
 
         // Enforce exactly 5 questions per interview session
         if (questionIndex >= 5) {
-          return socket.emit('interview-complete', {
+          const completePayload = {
             sessionId,
             message: 'All 5 technical questions completed. Please proceed to generate your final scorecard.'
-          });
+          };
+          socket.emit('interview-complete', completePayload);
+          interviewNamespace.to(sessionId).emit('interview-complete', completePayload);
+          return;
         }
 
-        // If question already exists at this index, return it
+        // If question already exists at this index, return it immediately
         if (session.questions[questionIndex]) {
-          return socket.emit('question-received', {
+          const payload = {
             question: session.questions[questionIndex],
             index: questionIndex
-          });
+          };
+          socket.emit('question-received', payload);
+          interviewNamespace.to(sessionId).emit('question-received', payload);
+          return;
         }
 
-        // Generate dynamic question
+        // Notify client that question is generating
         socket.emit('ai-thinking', { message: 'AI Interviewer is preparing your next question...' });
         const questionData = await generateInterviewQuestion(
           session.role,
@@ -99,13 +108,43 @@ const registerInterviewSocket = (io) => {
         session.questions.push(newQuestion);
         await session.save();
 
-        interviewNamespace.to(sessionId).emit('question-received', {
+        const payload = {
           question: newQuestion,
           index: questionIndex
-        });
+        };
+        // Emit directly to requesting socket AND the session room
+        socket.emit('question-received', payload);
+        interviewNamespace.to(sessionId).emit('question-received', payload);
       } catch (err) {
-        console.error('Error fetching question:', err);
-        socket.emit('error-message', { message: 'Failed to generate question.' });
+        console.error('Error in get-question, executing bulletproof curated fallback:', err.message);
+        try {
+          const roleBank = (session && ROLE_QUESTION_BANKS[session.role]) || DEFAULT_QUESTIONS;
+          const idx = Math.min(Math.max(0, questionIndex), roleBank.length - 1);
+          const fallbackQ = {
+            questionIndex,
+            category: roleBank[idx].category,
+            questionText: roleBank[idx].questionText,
+            expectedKeywords: roleBank[idx].expectedKeywords,
+            evaluation: {
+              modelAnswer: roleBank[idx].modelAnswer
+            }
+          };
+
+          if (session) {
+            session.questions.push(fallbackQ);
+            session.save().catch(saveErr => console.warn('Non-fatal session save warning:', saveErr.message));
+          }
+
+          const payload = {
+            question: fallbackQ,
+            index: questionIndex
+          };
+          socket.emit('question-received', payload);
+          interviewNamespace.to(sessionId).emit('question-received', payload);
+        } catch (fatalErr) {
+          console.error('Fatal fallback error:', fatalErr);
+          socket.emit('error-message', { message: 'Failed to generate question. Please click retry.' });
+        }
       }
     });
 
@@ -143,13 +182,15 @@ const registerInterviewSocket = (io) => {
 
         await session.save();
 
-        interviewNamespace.to(sessionId).emit('answer-evaluated', {
+        const evalPayload = {
           questionIndex,
           evaluation: q.evaluation,
           candidateAnswer: answer,
           isLastQuestion: questionIndex >= 4,
           totalQuestions: 5
-        });
+        };
+        socket.emit('answer-evaluated', evalPayload);
+        interviewNamespace.to(sessionId).emit('answer-evaluated', evalPayload);
       } catch (err) {
         console.error('Error evaluating answer:', err);
         socket.emit('error-message', { message: 'Evaluation failed.' });
