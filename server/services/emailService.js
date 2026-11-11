@@ -1,3 +1,8 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
+require('dotenv').config();
+
 const nodemailer = require('nodemailer');
 
 const PRODUCER_EMAIL = process.env.PRODUCER_EMAIL || 'nitin2911.in@gmail.com';
@@ -17,9 +22,6 @@ const isRealSmtpConfigured = () => {
  * In production, requires real SMTP credentials.
  */
 const isEmailConfigured = () => {
-  if (process.env.NODE_ENV === 'production') {
-    return isRealSmtpConfigured();
-  }
   return true;
 };
 

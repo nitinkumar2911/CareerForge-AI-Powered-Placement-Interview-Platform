@@ -1,4 +1,9 @@
+const path = require('path');
+const fs = require('fs');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -32,9 +37,6 @@ const io = new Server(server, {
     credentials: true
   }
 });
-
-const fs = require('fs');
-const path = require('path');
 
 // Ensure uploads/interviews directory exists
 const uploadsDir = path.join(__dirname, 'uploads', 'interviews');
@@ -81,6 +83,19 @@ registerInterviewSocket(io);
 
 // Central error handler
 app.use(errorHandler);
+
+// Serve static frontend assets in production (Railway or cloud hosting)
+const clientBuildPath = path.join(__dirname, '../client/dist');
+if (fs.existsSync(clientBuildPath)) {
+  app.use(express.static(clientBuildPath));
+  // Client-side single page app fallback for React Router
+  app.get('*', (req, res, next) => {
+    if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/uploads')) {
+      return next();
+    }
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT || 5000;
 
@@ -145,7 +160,7 @@ const startServer = async () => {
     await connectDB();
     await autoSeedIfEmpty();
 
-    server.listen(PORT, () => {
+    server.listen(PORT, '0.0.0.0', () => {
       console.log(`=======================================================`);
       console.log(`🚀 CareerForge Server active on port ${PORT}`);
       console.log(`   Health Check: http://localhost:${PORT}/api/health`);

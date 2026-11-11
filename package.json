@@ -4,12 +4,13 @@
   "description": "CareerForge – AI-Powered Placement & Interview Platform",
   "main": "server/server.js",
   "scripts": {
+    "start": "node server/server.js",
+    "build": "npm install --prefix server --include=dev && npm install --prefix client --include=dev && npm run build --prefix client",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "npm run dev --prefix server",
     "client": "npm run dev --prefix client",
     "install-all": "npm install && npm install --prefix server && npm install --prefix client",
-    "seed": "npm run seed --prefix server",
-    "build": "npm run build --prefix client"
+    "seed": "npm run seed --prefix server"
   },
   "keywords": [
     "react",
