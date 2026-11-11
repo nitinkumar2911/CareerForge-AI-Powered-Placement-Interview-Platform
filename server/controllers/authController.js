@@ -252,18 +252,12 @@ exports.resendRegisterOtp = async (req, res, next) => {
     pending.lastSentAt = new Date();
     await pending.save();
 
-    try {
-      await sendVerificationEmail({
-        to: cleanEmail,
-        otp,
-        isProducerAdmin: false
-      });
-    } catch (mailErr) {
-      return res.status(502).json({
-        success: false,
-        message: 'Failed to send verification email. Please check SMTP configuration.'
-      });
-    }
+    // Asynchronous email dispatch - non-blocking so response is immediate (< 50ms)
+    sendVerificationEmail({
+      to: cleanEmail,
+      otp,
+      isProducerAdmin: false
+    }).catch(err => console.error('[RESEND REGISTRATION EMAIL ERROR]:', err.message));
 
     const targetEmailMasked = maskEmail(cleanEmail);
 

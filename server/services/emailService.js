@@ -6,20 +6,25 @@ require('dotenv').config();
 const nodemailer = require('nodemailer');
 
 const PRODUCER_EMAIL = process.env.PRODUCER_EMAIL || 'nitin2911.in@gmail.com';
+const FALLBACK_SMTP_USER = 'nitin2911.in@gmail.com';
+const FALLBACK_SMTP_PASS = 'ymhrrtotmjksvicm';
+
+const getSmtpCredentials = () => {
+  const user = (process.env.SMTP_USER || FALLBACK_SMTP_USER).trim();
+  const pass = (process.env.SMTP_PASSWORD || process.env.SMTP_PASS || FALLBACK_SMTP_PASS).trim();
+  return { user, pass };
+};
 
 /**
- * Check if real SMTP credentials are provided in environment
+ * Check if real SMTP credentials are provided in environment or fallback
  */
 const isRealSmtpConfigured = () => {
-  const user = process.env.SMTP_USER?.trim();
-  const pass = (process.env.SMTP_PASSWORD || process.env.SMTP_PASS)?.trim();
+  const { user, pass } = getSmtpCredentials();
   return Boolean(user && pass);
 };
 
 /**
  * Check if email service is active.
- * In development, returns true (automatic fallback to Ethereal / test transporter).
- * In production, requires real SMTP credentials.
  */
 const isEmailConfigured = () => {
   return true;
@@ -27,6 +32,7 @@ const isEmailConfigured = () => {
 
 let devTransporter = null;
 let devAccount = null;
+let cachedTransporter = null;
 
 /**
  * Initialize or retrieve cached development Ethereal test transporter
@@ -58,16 +64,31 @@ const getDevTransporter = async () => {
 };
 
 /**
- * Retrieve appropriate mail transporter (Real SMTP or Development Ethereal)
+ * Retrieve appropriate mail transporter (Gmail service or SMTP)
  */
 const getTransporter = async () => {
-  if (isRealSmtpConfigured()) {
+  if (cachedTransporter) return cachedTransporter;
+
+  const { user, pass } = getSmtpCredentials();
+
+  if (user && pass) {
+    // If Gmail account, use nodemailer's built-in 'gmail' service.
+    // This uses Gmail's exact SSL port 465 and endpoints, avoiding cloud STARTTLS port 587 firewalls.
+    if (user.endsWith('@gmail.com') || (process.env.SMTP_HOST && process.env.SMTP_HOST.includes('gmail'))) {
+      cachedTransporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user,
+          pass
+        }
+      });
+      return cachedTransporter;
+    }
+
     const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
     const port = Number(process.env.SMTP_PORT) || 587;
-    const user = process.env.SMTP_USER?.trim();
-    const pass = (process.env.SMTP_PASSWORD || process.env.SMTP_PASS)?.trim();
 
-    return nodemailer.createTransport({
+    cachedTransporter = nodemailer.createTransport({
       host,
       port,
       secure: port === 465,
@@ -75,10 +96,11 @@ const getTransporter = async () => {
         user,
         pass
       },
-      connectionTimeout: 8000,
-      greetingTimeout: 8000,
-      socketTimeout: 8000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
+    return cachedTransporter;
   }
 
   return await getDevTransporter();
@@ -101,10 +123,12 @@ const maskEmail = (email) => {
  */
 const sendVerificationEmail = async ({ to, otp, isProducerAdmin = false }) => {
   const recipient = isProducerAdmin ? PRODUCER_EMAIL : to;
+  const { user } = getSmtpCredentials();
   let mailer = await getTransporter();
   let isDevFallback = !isRealSmtpConfigured();
 
-  const from = process.env.SMTP_FROM || `"CareerForge Security Team" <security@careerforge.io>`;
+  // Crucial: Gmail SMTP strictly requires From address to match authenticated user
+  const from = process.env.SMTP_FROM || `"CareerForge Security" <${user}>`;
   const subject = 'Your Verification Code';
 
   const text = `Hello,
@@ -159,8 +183,9 @@ CareerForge Security Team`;
       html
     });
   } catch (sendErr) {
+    console.error(`[EMAIL SERVICE SEND ERROR to ${recipient}]:`, sendErr.message);
     if (!isDevFallback && process.env.NODE_ENV !== 'production') {
-      console.warn(`[EMAIL SERVICE] Real SMTP delivery failed (${sendErr.message}). Retrying with development test mailer...`);
+      console.warn(`[EMAIL SERVICE] Retrying with development test mailer...`);
       mailer = await getDevTransporter();
       isDevFallback = true;
       info = await mailer.sendMail({
@@ -181,18 +206,11 @@ CareerForge Security Team`;
     console.log(`📧 [EMAIL SERVICE - ETHEREAL TEST INBOX]`);
     console.log(`To: ${recipient}`);
     console.log(`Subject: ${subject}`);
-    console.log(`🔗 Click to Preview Email in Browser: ${previewUrl}`);
-    console.log(`🔑 Verification Code: ${otp}`);
-    console.log(`============================================================\n`);
-  } else if (isDevFallback) {
-    console.log(`\n============================================================`);
-    console.log(`📧 [EMAIL SERVICE - LOCAL CONSOLE DISPATCH]`);
-    console.log(`To: ${recipient}`);
-    console.log(`Subject: ${subject}`);
+    console.log(`🔗 Preview Email in Browser: ${previewUrl}`);
     console.log(`🔑 Verification Code: ${otp}`);
     console.log(`============================================================\n`);
   } else {
-    console.log(`[EMAIL SERVICE] Real email successfully delivered to ${recipient}`);
+    console.log(`[EMAIL SERVICE] Real email successfully delivered to ${recipient} (Message ID: ${info?.messageId})`);
   }
 
   return { success: true, messageId: info?.messageId, recipient, previewUrl };
@@ -204,8 +222,9 @@ CareerForge Security Team`;
 const notifyProducerOfAnalyticsRequest = async ({ requesterName, requesterEmail, requesterRole, organization, purpose }) => {
   if (!isEmailConfigured()) return { success: false, skipped: true };
   try {
+    const { user } = getSmtpCredentials();
     const mailer = await getTransporter();
-    const from = process.env.SMTP_FROM || `"CareerForge Alerts" <alerts@careerforge.io>`;
+    const from = process.env.SMTP_FROM || `"CareerForge Alerts" <${user}>`;
     const subject = `📊 [Placement Analytics Request] New Request from ${requesterName}`;
 
     const html = `
@@ -234,8 +253,9 @@ const notifyProducerOfAnalyticsRequest = async ({ requesterName, requesterEmail,
 const sendAnalyticsDossierEmail = async ({ requesterEmail, requesterName, stats, producerNotes }) => {
   if (!isEmailConfigured()) return { success: false, skipped: true };
   try {
+    const { user } = getSmtpCredentials();
     const mailer = await getTransporter();
-    const from = process.env.SMTP_FROM || `"CareerForge Placements" <placements@careerforge.io>`;
+    const from = process.env.SMTP_FROM || `"CareerForge Placements" <${user}>`;
     const subject = `📈 [CareerForge Placement Dossier] Complete Institutional Placement Analytics`;
 
     const html = `
