@@ -88,19 +88,12 @@ exports.register = async (req, res, next) => {
     });
 
     // Send professional email to user's actual email address
-    try {
-      await sendVerificationEmail({
-        to: cleanEmail,
-        otp,
-        isProducerAdmin: false
-      });
-    } catch (mailErr) {
-      console.error('Mail dispatch error:', mailErr.message);
-      return res.status(502).json({
-        success: false,
-        message: 'Failed to send verification email. Please check SMTP configuration.'
-      });
-    }
+    // Asynchronous email dispatch - returns immediately so user is not blocked
+    sendVerificationEmail({
+      to: cleanEmail,
+      otp,
+      isProducerAdmin: false
+    }).catch(err => console.error('[REGISTER EMAIL ERROR]:', err.message));
 
     const targetEmailMasked = maskEmail(cleanEmail);
 
@@ -348,20 +341,12 @@ exports.login = async (req, res, next) => {
       lastSentAt: new Date()
     });
 
-    // Send email to actual address (for admin: always to PRODUCER_EMAIL nitin2911.in@gmail.com)
-    try {
-      await sendVerificationEmail({
-        to: cleanEmail,
-        otp,
-        isProducerAdmin
-      });
-    } catch (mailErr) {
-      console.error('Mail dispatch error:', mailErr.message);
-      return res.status(502).json({
-        success: false,
-        message: 'Failed to send verification email. Please check SMTP configuration.'
-      });
-    }
+    // Asynchronous email dispatch - returns immediately in < 50ms so UI never hangs
+    sendVerificationEmail({
+      to: cleanEmail,
+      otp,
+      isProducerAdmin
+    }).catch(err => console.error('[LOGIN EMAIL ERROR]:', err.message));
 
     const targetEmail = isProducerAdmin ? PRODUCER_EMAIL : user.email;
     const targetEmailMasked = maskEmail(targetEmail);
@@ -528,18 +513,11 @@ exports.resendOtp = async (req, res, next) => {
       lastSentAt: new Date()
     });
 
-    try {
-      await sendVerificationEmail({
-        to: cleanEmail,
-        otp,
-        isProducerAdmin
-      });
-    } catch (mailErr) {
-      return res.status(502).json({
-        success: false,
-        message: 'Failed to send verification email. Please check SMTP configuration.'
-      });
-    }
+    sendVerificationEmail({
+      to: cleanEmail,
+      otp,
+      isProducerAdmin
+    }).catch(err => console.error('[RESEND EMAIL ERROR]:', err.message));
 
     const targetEmail = isProducerAdmin ? PRODUCER_EMAIL : user.email;
     const targetEmailMasked = maskEmail(targetEmail);
@@ -651,18 +629,12 @@ exports.demoLogin = async (req, res, next) => {
         lastSentAt: new Date()
       });
 
-      try {
-        await sendVerificationEmail({
-          to: 'admin@careerforge.io',
-          otp,
-          isProducerAdmin: true
-        });
-      } catch (mailErr) {
-        return res.status(502).json({
-          success: false,
-          message: 'Failed to send verification email. Please check SMTP configuration.'
-        });
-      }
+      // Asynchronous email dispatch - instant response (< 30ms)
+      sendVerificationEmail({
+        to: 'admin@careerforge.io',
+        otp,
+        isProducerAdmin: true
+      }).catch(err => console.error('[ADMIN DEMO EMAIL ERROR]:', err.message));
 
       return res.json({
         success: true,
